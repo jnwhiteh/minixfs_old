@@ -139,3 +139,55 @@ func TestCache(test *testing.T) {
 	super.Shutdown()
 	cache.Close()
 }
+
+func TestWrongDevice(test *testing.T) {
+	deva, err := NewFileDevice("../../minix3usr.img", binary.LittleEndian)
+	if err != nil {
+		test.Fatalf("Failed to create device for minix3usr.img: %s", err)
+	}
+	defer deva.Close()
+
+	devb, err := NewFileDevice("../../minix3root.img", binary.LittleEndian)
+	if err != nil {
+		test.Fatalf("Failed to create device for minix3root.img: %s", err)
+	}
+	defer devb.Close()
+
+	supera, err := ReadSuperblock(deva)
+	if err != nil {
+		test.Fatalf("Could not read superblock: %s", err)
+	}
+
+	superb, err := ReadSuperblock(devb)
+	if err != nil {
+		test.Fatalf("Could not read superblock: %s", err)
+	}
+
+	cache := NewLRUCache()
+	cache.MountDevice(0, deva, supera)
+	buf := cache.GetBlock(0, 0, FULL_DATA_BLOCK, NORMAL) // get a block
+
+	dataa := &buf.block
+	cache.PutBlock(buf, FULL_DATA_BLOCK)
+
+	err = cache.UnmountDevice(0)
+	if err != nil {
+		test.Fatalf("Error unmounting device: %s - %s", err, herestr(2))
+	}
+
+	err = cache.MountDevice(0, devb, superb)
+	if err != nil {
+		test.Fatalf("Error mounting device: %s - %s", err, herestr(2))
+	}
+
+	buf = cache.GetBlock(0, 0, FULL_DATA_BLOCK, NORMAL)
+	datab := &buf.block
+	if dataa == datab {
+		test.Fatalf("Invalid cache data obtained: %s", herestr(2))
+	}
+
+	err = cache.Close()
+	if err != nil {
+		test.Errorf("Failed closing cache: %s - %s", err, herestr(2))
+	}
+}

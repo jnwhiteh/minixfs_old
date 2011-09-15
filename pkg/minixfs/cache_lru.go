@@ -215,6 +215,7 @@ func (c *LRUCache) mountDevice(devno int, dev BlockDevice, super *Superblock) os
 // Clear an association between a BlockDevice/*Superblock pair and a device
 // number.
 func (c *LRUCache) unmountDevice(devno int) os.Error {
+	c.invalidate(devno)
 	c.devs[devno] = nil
 	c.supers[devno] = nil
 	return nil
