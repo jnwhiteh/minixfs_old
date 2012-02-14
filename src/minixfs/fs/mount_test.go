@@ -31,18 +31,19 @@ func TestMount(test *testing.T) {
 		FatalHere(test, "Failed spawning new process: %s", err)
 	}
 	rip, err := fs.eatPath(proc, "/mnt/sample/europarl-en.txt")
+	finode := rip.Finode()
 	if err != nil {
 		FatalHere(test, "Failed fetching inode: %s", err)
 	}
 
-	if rip.Inum != 542 {
-		FatalHere(test, "Data mismatch for inum got %d, expected %d", rip.Inum, 542)
+	if rip.Inum() != 542 {
+		FatalHere(test, "Data mismatch for inum got %d, expected %d", rip.Inum(), 542)
 	}
-	if rip.Inode.Nlinks != 1 {
-		FatalHere(test, "Data mismatch for links got %d, expected %d", rip.Inode.Nlinks, 1)
+	if finode.Links() != 1 {
+		FatalHere(test, "Data mismatch for links got %d, expected %d", finode.Links(), 1)
 	}
-	if rip.Inode.Size != 4489799 {
-		FatalHere(test, "Data mismatch for size got %d, expected %d", rip.Inode.Size, 4489799)
+	if finode.Size() != 4489799 {
+		FatalHere(test, "Data mismatch for size got %d, expected %d", finode.Size(), 4489799)
 	}
 
 	fs.icache.PutInode(rip)
@@ -82,14 +83,16 @@ func TestUnmount(test *testing.T) {
 		FatalHere(test, "Failed spawning new process: %s", err)
 	}
 	rip := proc.rootdir
-	if rip.Inum != 518 {
-		FatalHere(test, "Data mismatch for inum got %d, expected %d", rip.Inum, 518)
+	dinode := rip.Dinode()
+
+	if rip.Inum() != 518 {
+		FatalHere(test, "Data mismatch for inum got %d, expected %d", rip.Inum(), 518)
 	}
-	if rip.Inode.Nlinks != 2 {
-		FatalHere(test, "Data mismatch for links got %d, expected %d", rip.Inode.Nlinks, 2)
+	if dinode.Links() != 2 {
+		FatalHere(test, "Data mismatch for links got %d, expected %d", dinode.Links(), 2)
 	}
-	if rip.Inode.Size != 128 {
-		FatalHere(test, "Data mismatch for size got %d, expected %d", rip.Inode.Size, 128)
+	if dinode.Size() != 128 {
+		FatalHere(test, "Data mismatch for size got %d, expected %d", dinode.Size(), 128)
 	}
 
 	fs.Exit(proc)

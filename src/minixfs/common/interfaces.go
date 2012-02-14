@@ -46,15 +46,15 @@ type InodeCache interface {
 	// Update the information about a given device
 	MountDevice(devno int, bitmap Bitmap, info DeviceInfo)
 	// Create a new inode with the given parameters
-	NewInode(devno, inum int, mode, links uint16, uid int16, gid uint16, zone uint32) (*CacheInode, error)
+	NewInode(devno, inum int, mode, links uint16, uid int16, gid uint16, zone uint32) (CacheInode, error)
 	// Get an inode from the given device
-	GetInode(devno, inum int) (*CacheInode, error)
+	GetInode(devno, inum int) (CacheInode, error)
 	// Return the given inode to the cache. If the inode has been altered and
 	// it has no other clients, it should be written to the block cache.
-	PutInode(rip *CacheInode)
+	PutInode(rip CacheInode)
 	// Flush the inode to the block cache, ensuring that it will be written
 	// the next time the block cache is flushed.
-	FlushInode(rip *CacheInode)
+	FlushInode(rip CacheInode)
 	// Returns whether or not the given device is busy. As non-busy device has
 	// exactly one client of the root inode.
 	IsDeviceBusy(devno int) bool
@@ -62,7 +62,54 @@ type InodeCache interface {
 	Close() error
 }
 
+// An object that implements the Inode interface can return the device/inode
+// number of the inode.
+type Inode interface {
+	// Return the device number of the inode
+	Devnum() int
+	// Return the inode number of the inode
+	Inum() int
+}
+
+// CacheInode is the interface of an inode received from the InodeCache.
+type CacheInode interface {
+	Inode // Implement the standard Inode interface
+
+	// Return whether or not the cached inode is busy (i.e. has more than one
+	// client)
+	IsBusy() bool
+	// Return the type masked portion of the mode
+	Type() uint16
+
+	// Return whether or not the inode is a directory inode
+	IsDirectory() bool
+	// Return whether or not the inode is a regular file inode
+	IsRegular() bool
+
+	// Return an interface on which file-inode operations can be
+	// performed
+	Finode() Finode
+	// Return an interface on which directory-inode operations can be
+	// performed
+	Dinode() Dinode
+}
+
+type VolatileInode interface {
+	// Returns whether or not the inode is being used as a mount point
+	IsMountPoint() bool
+	// Sets whether or not the inode is being used as a mount point
+	SetMountPoint(mounted bool)
+	Links() int
+	IncLinks()
+	DecLinks()
+	SetDirty(dirty bool)
+	Size() int
+}
+
 type Finode interface {
+	Inode         // Implement the standard Inode interface
+	VolatileInode // Implement getter/setter methods for various properties
+
 	// Read up to len(buf) bytes from pos within the file. Return the number
 	// of bytes actually read and any error that may have occurred.
 	Read(buf []byte, pos int) (int, error)
@@ -70,8 +117,11 @@ type Finode interface {
 	// the number of bytes actually written and any error that may have
 	// occurred.
 	Write(buf []byte, pos int) (int, error)
+	// Truncate the file down to 0 size, removing all data zones, etc.
+	Truncate() error
 	// Lock the inode, obtaining exclusive access via the returned interface,
 	// until the inode has been unlocked.
+
 	Lock() Finode
 	// Unlock the finode, only has effect on an already locked inode.
 	Unlock()
@@ -80,12 +130,15 @@ type Finode interface {
 }
 
 type Dinode interface {
+	Inode         // Implement the standard Inode interface
+	VolatileInode // Implement getter/setter methods for various properties
+
 	// Search the directory for an entry named 'name' and return the
 	// devno/inum of the inode, if found.
 	Lookup(name string) (bool, int, int)
 	// Search the directory for an entry named 'name' and fetch the
 	// inode from the given InodeCache.
-	LookupGet(name string, icache InodeCache) (*CacheInode, error)
+	LookupGet(name string, icache InodeCache) (CacheInode, error)
 	// Add an entry 'name' to the directory listing, pointing to the 'inum'
 	// inode.
 	Link(name string, inum int) error

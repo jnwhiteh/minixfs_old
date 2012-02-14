@@ -1,4 +1,4 @@
-package minixfs
+package inode
 
 import (
 	. "minixfs/common"
@@ -30,6 +30,7 @@ type m_finode_req_write struct {
 type m_finode_req_close struct{}
 type m_finode_req_lock struct{}
 type m_finode_req_unlock struct{}
+type m_finode_req_truncate struct{}
 
 // Response types
 type m_finode_res_io struct {
@@ -53,18 +54,24 @@ type m_finode_res_unlock struct {
 	ok bool
 }
 
-// For type-checking
-func (m m_finode_req_read) is_m_finode_req()   {}
-func (m m_finode_req_write) is_m_finode_req()  {}
-func (m m_finode_req_close) is_m_finode_req()  {}
-func (m m_finode_req_lock) is_m_finode_req()   {}
-func (m m_finode_req_unlock) is_m_finode_req() {}
+type m_finode_res_truncate struct {
+	err error
+}
 
-func (m m_finode_res_io) is_m_finode_res()      {}
-func (m m_finode_res_asyncio) is_m_finode_res() {}
-func (m m_finode_res_err) is_m_finode_res()     {}
-func (m m_finode_res_lock) is_m_finode_res()    {}
-func (m m_finode_res_unlock) is_m_finode_res()  {}
+// For type-checking
+func (m m_finode_req_read) is_m_finode_req()     {}
+func (m m_finode_req_write) is_m_finode_req()    {}
+func (m m_finode_req_close) is_m_finode_req()    {}
+func (m m_finode_req_lock) is_m_finode_req()     {}
+func (m m_finode_req_unlock) is_m_finode_req()   {}
+func (m m_finode_req_truncate) is_m_finode_req() {}
+
+func (m m_finode_res_io) is_m_finode_res()       {}
+func (m m_finode_res_asyncio) is_m_finode_res()  {}
+func (m m_finode_res_err) is_m_finode_res()      {}
+func (m m_finode_res_lock) is_m_finode_res()     {}
+func (m m_finode_res_unlock) is_m_finode_res()   {}
+func (m m_finode_res_truncate) is_m_finode_res() {}
 
 // Check interface implementation
 var _ m_finode_req = m_finode_req_read{}
@@ -72,9 +79,11 @@ var _ m_finode_req = m_finode_req_write{}
 var _ m_finode_req = m_finode_req_close{}
 var _ m_finode_req = m_finode_req_lock{}
 var _ m_finode_req = m_finode_req_unlock{}
+var _ m_finode_req = m_finode_req_truncate{}
 
 var _ m_finode_res = m_finode_res_io{}
 var _ m_finode_res = m_finode_res_asyncio{}
 var _ m_finode_res = m_finode_res_err{}
 var _ m_finode_res = m_finode_res_lock{}
 var _ m_finode_res = m_finode_res_unlock{}
+var _ m_finode_res = m_finode_res_truncate{}

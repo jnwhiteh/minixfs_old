@@ -1,13 +1,13 @@
-package utils
+package inode
 
 import . "minixfs/common"
 
 // Zero a zone, possibly starting in the middle. The parameter 'pos' gives a
 // byte in the first block to be zeroed. clear_zone is called from
 // read_write() and new_block().
-func ClearZone(rip *CacheInode, pos int, flag int, cache BlockCache) {
-	scale := rip.Devinfo.Scale
-	blocksize := rip.Devinfo.Blocksize
+func ClearZone(rip *cacheInode, pos int, flag int, cache BlockCache) {
+	scale := rip.devinfo.Scale
+	blocksize := rip.devinfo.Blocksize
 
 	// If the block size and zone size are the same, clear_zone not needed
 	if scale == 0 {
@@ -36,7 +36,7 @@ func ClearZone(rip *CacheInode, pos int, flag int, cache BlockCache) {
 	// Clear all blocks between blo and bhi
 	for b := blo; b < bhi; b++ {
 		// TODO: I'm not sure the block type is correct here.
-		bp := cache.GetBlock(rip.Devno, int(b), FULL_DATA_BLOCK, NO_READ)
+		bp := cache.GetBlock(rip.devnum, int(b), FULL_DATA_BLOCK, NO_READ)
 		ZeroBlock(bp, FULL_DATA_BLOCK, blocksize)
 		cache.PutBlock(bp, FULL_DATA_BLOCK)
 	}
@@ -61,12 +61,12 @@ func ZeroBlock(bp *CacheBlock, btype BlockType, blocksize int) {
 
 // Write 'chunk' bytes from 'buff' into 'rip' at position 'pos' in the file.
 // This is at offset 'off' within the current block.
-func WriteChunk(rip *CacheInode, pos, off, chunk int, buff []byte, cache BlockCache) error {
+func WriteChunk(rip *cacheInode, pos, off, chunk int, buff []byte, cache BlockCache) error {
 	var bp *CacheBlock
 	var err error
 
-	bsize := rip.Devinfo.Blocksize
-	fsize := int(rip.Inode.Size)
+	bsize := rip.devinfo.Blocksize
+	fsize := int(rip.disk.Size)
 	b := ReadMap(rip, pos, cache)
 
 	if b == NO_BLOCK {
@@ -86,7 +86,7 @@ func WriteChunk(rip *CacheInode, pos, off, chunk int, buff []byte, cache BlockCa
 		if off == 0 && pos >= fsize {
 			n = NO_READ
 		}
-		bp = cache.GetBlock(rip.Devno, int(b), FULL_DATA_BLOCK, n)
+		bp = cache.GetBlock(rip.devnum, int(b), FULL_DATA_BLOCK, n)
 	}
 
 	// In all cases, bp now points to a valid buffer
@@ -95,7 +95,7 @@ func WriteChunk(rip *CacheInode, pos, off, chunk int, buff []byte, cache BlockCa
 	}
 
 	if chunk != bsize && pos >= fsize && off == 0 {
-		ZeroBlock(bp, FULL_DATA_BLOCK, rip.Devinfo.Blocksize)
+		ZeroBlock(bp, FULL_DATA_BLOCK, rip.devinfo.Blocksize)
 	}
 
 	// Copy 'chunk' bytes from the user supplied buffer into the block
@@ -119,7 +119,7 @@ func WriteChunk(rip *CacheInode, pos, off, chunk int, buff []byte, cache BlockCa
 // Acquire a new block and return a pointer to it. Doing so may require
 // allocating a complete zone, and then returning the initial block. On the
 // other hand, the current zone may still have some unused blocks.
-func NewBlock(rip *CacheInode, position int, btype BlockType, cache BlockCache) (*CacheBlock, error) {
+func NewBlock(rip *cacheInode, position int, btype BlockType, cache BlockCache) (*CacheBlock, error) {
 	var b int
 	var z int
 	var err error
@@ -129,33 +129,33 @@ func NewBlock(rip *CacheInode, position int, btype BlockType, cache BlockCache) 
 		// Lose if the file is non-empty but the first zone number is NO_ZONE,
 		// corresponding to a zone full of zeros. It would be better to search
 		// near the last real zone.
-		if z, err = rip.Bitmap.AllocZone(int(rip.Inode.Zone[0])); z == NO_ZONE {
+		if z, err = rip.bitmap.AllocZone(int(rip.disk.Zone[0])); z == NO_ZONE {
 			return nil, err
 		}
 		if err = WriteMap(rip, position, z, cache); err != nil {
-			rip.Bitmap.FreeZone(z)
+			rip.bitmap.FreeZone(z)
 			return nil, err
 		}
 
 		// If we are not writing at EOF, clear the zone, just to be safe
-		if position != int(rip.Inode.Size) {
+		if position != int(rip.disk.Size) {
 			ClearZone(rip, position, 1, cache)
 		}
-		scale := rip.Devinfo.Scale
-		blocksize := rip.Devinfo.Blocksize
+		scale := rip.devinfo.Scale
+		blocksize := rip.devinfo.Blocksize
 		base_block := z << scale
 		zone_size := blocksize << scale
 		b = base_block + ((position % zone_size) / blocksize)
 	}
 
-	bp := cache.GetBlock(rip.Devno, int(b), btype, NO_READ)
-	ZeroBlock(bp, btype, rip.Devinfo.Blocksize)
+	bp := cache.GetBlock(rip.devnum, int(b), btype, NO_READ)
+	ZeroBlock(bp, btype, rip.devinfo.Blocksize)
 	return bp, nil
 }
 
 // Write a new zone into an inode
-func WriteMap(rip *CacheInode, position int, new_zone int, cache BlockCache) error {
-	rip.Dirty = true // inode will be changed
+func WriteMap(rip *cacheInode, position int, new_zone int, cache BlockCache) error {
+	rip.dirty = true // inode will be changed
 	var bp *CacheBlock = nil
 	var z int
 	var z1 int
@@ -163,8 +163,8 @@ func WriteMap(rip *CacheInode, position int, new_zone int, cache BlockCache) err
 	var err error
 
 	// relative zone # to insert
-	blocksize := rip.Devinfo.Blocksize
-	scale := rip.Devinfo.Scale
+	blocksize := rip.devinfo.Blocksize
+	scale := rip.devinfo.Scale
 
 	zone := int((position / blocksize) >> scale)
 	zones := V2_NR_DZONES                             // # direct zones in the inode
@@ -173,7 +173,7 @@ func WriteMap(rip *CacheInode, position int, new_zone int, cache BlockCache) err
 	// Is 'position' to be found in the inode itself?
 	if zone < zones {
 		zindex = zone
-		rip.Inode.Zone[zindex] = uint32(new_zone)
+		rip.disk.Zone[zindex] = uint32(new_zone)
 		return nil
 	}
 
@@ -187,17 +187,17 @@ func WriteMap(rip *CacheInode, position int, new_zone int, cache BlockCache) err
 
 	if excess < int(nr_indirects) {
 		// 'position' can be located via the single indirect block
-		z1 = int(rip.Inode.Zone[zones]) // single indirect zone
+		z1 = int(rip.disk.Zone[zones]) // single indirect zone
 		single = true
 	} else {
 		// 'position' can be located via the double indirect block
-		if z = int(rip.Inode.Zone[zones+1]); z == NO_ZONE {
+		if z = int(rip.disk.Zone[zones+1]); z == NO_ZONE {
 			// Create the double indirect block
-			z, err = rip.Bitmap.AllocZone(int(rip.Inode.Zone[0]))
+			z, err = rip.bitmap.AllocZone(int(rip.disk.Zone[0]))
 			if z == NO_ZONE || err != nil {
 				return err
 			}
-			rip.Inode.Zone[zones+1] = uint32(z)
+			rip.disk.Zone[zones+1] = uint32(z)
 			new_dbl = true
 		}
 
@@ -215,20 +215,20 @@ func WriteMap(rip *CacheInode, position int, new_zone int, cache BlockCache) err
 		} else {
 			rdflag = NORMAL
 		}
-		bp = cache.GetBlock(rip.Devno, b, INDIRECT_BLOCK, rdflag)
+		bp = cache.GetBlock(rip.devnum, b, INDIRECT_BLOCK, rdflag)
 		if new_dbl {
 			ZeroBlock(bp, INDIRECT_BLOCK, blocksize)
 		}
-		z1 = int(RdIndir(bp, ind_ex, cache, rip.Devinfo.Firstdatazone, rip.Devinfo.Zones))
+		z1 = int(RdIndir(bp, ind_ex, cache, rip.devinfo.Firstdatazone, rip.devinfo.Zones))
 		single = false
 	}
 
 	// z1 is now single indirect zone; 'excess' is index
 	if z1 == NO_ZONE {
 		// Create indirect block and store zone # in inode or dbl indir block
-		z1, err = rip.Bitmap.AllocZone(int(rip.Inode.Zone[0]))
+		z1, err = rip.bitmap.AllocZone(int(rip.disk.Zone[0]))
 		if single {
-			rip.Inode.Zone[zones] = uint32(z1) // update inode
+			rip.disk.Zone[zones] = uint32(z1) // update inode
 		} else {
 			WrIndir(bp, ind_ex, z1) // update dbl indir
 		}
@@ -251,7 +251,7 @@ func WriteMap(rip *CacheInode, position int, new_zone int, cache BlockCache) err
 	} else {
 		rdflag = NORMAL
 	}
-	bp = cache.GetBlock(rip.Devno, b, INDIRECT_BLOCK, rdflag)
+	bp = cache.GetBlock(rip.devnum, b, INDIRECT_BLOCK, rdflag)
 	if new_ind {
 		ZeroBlock(bp, INDIRECT_BLOCK, blocksize)
 	}
@@ -269,17 +269,17 @@ func WrIndir(bp *CacheBlock, index int, zone int) {
 }
 
 // Remove all the zones from the inode and mark it as dirty
-func Truncate(rip *CacheInode, bmap Bitmap, cache BlockCache) {
-	ftype := rip.Inode.Mode & I_TYPE
+func Truncate(rip *cacheInode, bmap Bitmap, cache BlockCache) {
+	ftype := rip.disk.Mode & I_TYPE
 
 	// check to see if the file is special
 	if ftype == I_CHAR_SPECIAL || ftype == I_BLOCK_SPECIAL {
 		return
 	}
 
-	scale := rip.Devinfo.Scale
-	zone_size := rip.Devinfo.Blocksize << scale
-	nr_indirects := rip.Devinfo.Blocksize / V2_ZONE_NUM_SIZE
+	scale := rip.devinfo.Scale
+	zone_size := rip.devinfo.Blocksize << scale
+	nr_indirects := rip.devinfo.Blocksize / V2_ZONE_NUM_SIZE
 
 	// PIPE:
 	// // Pipes can shrink, so adjust size to make sure all zones are removed
@@ -289,7 +289,7 @@ func Truncate(rip *CacheInode, bmap Bitmap, cache BlockCache) {
 	// }
 
 	// step through the file a zone at a time, finding and freeing the zones
-	for position := 0; position < int(rip.Inode.Size); position += zone_size {
+	for position := 0; position < int(rip.disk.Size); position += zone_size {
 		if b := ReadMap(rip, position, cache); b != NO_BLOCK {
 			z := b >> scale
 			bmap.FreeZone(z)
@@ -297,21 +297,21 @@ func Truncate(rip *CacheInode, bmap Bitmap, cache BlockCache) {
 	}
 
 	// all the dirty zones have been freed. Now free the indirect zones
-	rip.Dirty = true
+	rip.dirty = true
 	// PIPE:
 	// if waspipe {
 	// 	fs.WipeInode(rip)
 	// 	return
 	// }
 	single := V2_NR_DZONES
-	bmap.FreeZone(int(rip.Inode.Zone[single]))
+	bmap.FreeZone(int(rip.disk.Zone[single]))
 
-	if z := int(rip.Inode.Zone[single+1]); z != NO_ZONE {
+	if z := int(rip.disk.Zone[single+1]); z != NO_ZONE {
 		// free all the single indirect zones pointed to by the double
 		b := int(z << scale)
-		bp := cache.GetBlock(rip.Devno, b, INDIRECT_BLOCK, NORMAL)
+		bp := cache.GetBlock(rip.devnum, b, INDIRECT_BLOCK, NORMAL)
 		for i := 0; i < nr_indirects; i++ {
-			z1 := RdIndir(bp, i, cache, rip.Devinfo.Firstdatazone, rip.Devinfo.Zones)
+			z1 := RdIndir(bp, i, cache, rip.devinfo.Firstdatazone, rip.devinfo.Zones)
 			bmap.FreeZone(z1)
 		}
 		// now free the double indirect zone itself

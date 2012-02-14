@@ -1,19 +1,18 @@
-package minixfs
+package inode
 
 import (
 	"io"
 	"log"
 	. "minixfs/common"
-	"minixfs/utils"
-
 	"sync"
 )
 
 // The interface to the dinode is returned as a channel, with methods wrapping
 // the channel operations.
-type requestChan struct {
-	in  chan m_finode_req
-	out chan m_finode_res
+type finodeRequestChan struct {
+	in    chan m_finode_req
+	out   chan m_finode_res
+	inode *cacheInode
 }
 
 // A Finode is a process-oriented file inode, shared amongst all open
@@ -23,7 +22,7 @@ type requestChan struct {
 // read() call for this file. In particular, open/close operations must not
 // block reads, and multiple independent read requests must be allowed.
 type finode struct {
-	inode   *CacheInode
+	inode   *cacheInode
 	devinfo DeviceInfo
 	cache   BlockCache
 
@@ -35,11 +34,11 @@ type finode struct {
 	closed    chan bool
 }
 
-func New(inode *CacheInode, devinfo DeviceInfo, cache BlockCache) Finode {
+func NewFinodeServer(inode *cacheInode) Finode {
 	finode := &finode{
 		inode,
-		devinfo,
-		cache,
+		inode.devinfo,
+		inode.bcache,
 		make(chan m_finode_req),
 		make(chan m_finode_res),
 		nil,
@@ -49,40 +48,40 @@ func New(inode *CacheInode, devinfo DeviceInfo, cache BlockCache) Finode {
 
 	go finode.loop()
 
-	return &requestChan{
+	return &finodeRequestChan{
 		finode.in,
 		finode.out,
+		inode,
 	}
 }
 
 func (fi *finode) loop() {
 	var in <-chan m_finode_req = fi.in
 	var out chan<- m_finode_res = fi.out
-	for req := range in {
+
+	for {
+		req, ok := <-in
+		if !ok {
+			return
+		}
+
 		switch req := req.(type) {
 		case m_finode_req_lock:
-			// Someone is asking for exclusive access to the device, so move
-			// the channels around to arrange that, and return the new channel
-			// interface.
-			if fi.locked != nil {
-				// We are already locked, return nil
-				out <- m_finode_res_lock{nil}
-				continue
-			}
-			fi.locked = fi.in
-			finodeLocked := &requestChan{
-				make(chan m_finode_req),
+			newin := make(chan m_finode_req)
+			in = newin
+			out <- m_finode_res_lock{&finodeRequestChan{
+				newin,
 				fi.out,
-			}
-			in = finodeLocked.in
-			out <- m_finode_res_lock{finodeLocked}
+				fi.inode,
+			}}
 		case m_finode_req_unlock:
-			if fi.locked == nil {
-				// We are not locked, panic
-				out <- m_finode_res_unlock{false}
-			}
-			in = fi.locked
+			in = fi.in
 			out <- m_finode_res_unlock{true}
+		case m_finode_req_truncate:
+			rip := fi.inode
+			Truncate(rip, rip.bitmap, rip.bcache)
+			// TODO: This should probably be capable of erroring
+			out <- m_finode_res_truncate{nil}
 		case m_finode_req_read:
 			fi.waitGroup.Add(1)
 
@@ -120,8 +119,16 @@ func (fi *finode) loop() {
 // Public interface
 //////////////////////////////////////////////////////////////////////////////
 
+func (fi *finodeRequestChan) Devnum() int {
+	return fi.inode.Devnum()
+}
+
+func (fi *finodeRequestChan) Inum() int {
+	return fi.inode.Inum()
+}
+
 // Read up to len(b) bytes from the file from position 'pos'
-func (fi *requestChan) Read(b []byte, pos int) (int, error) {
+func (fi *finodeRequestChan) Read(b []byte, pos int) (int, error) {
 	fi.in <- m_finode_req_read{b, pos}
 	ares := (<-fi.out).(m_finode_res_asyncio)
 	res := (<-ares.callback)
@@ -129,32 +136,71 @@ func (fi *requestChan) Read(b []byte, pos int) (int, error) {
 }
 
 // Write len(b) bytes to the file at position 'pos'
-func (fi *requestChan) Write(data []byte, pos int) (n int, err error) {
+func (fi *finodeRequestChan) Write(data []byte, pos int) (n int, err error) {
 	fi.in <- m_finode_req_write{data, pos}
 	res := (<-fi.out).(m_finode_res_io)
 	return res.n, res.err
 }
 
 // Close an instance of this finode.
-func (fi *requestChan) Close() error {
+func (fi *finodeRequestChan) Close() error {
 	fi.in <- m_finode_req_close{}
 	res := (<-fi.out).(m_finode_res_err)
 	return res.err
 }
 
-func (fi *requestChan) Lock() Finode {
+func (fi *finodeRequestChan) Lock() Finode {
 	fi.in <- m_finode_req_lock{}
 	res := (<-fi.out).(m_finode_res_lock)
 	return res.finode
 }
 
-func (fi *requestChan) Unlock() {
+func (fi *finodeRequestChan) Unlock() {
 	fi.in <- m_finode_req_unlock{}
 	res := (<-fi.out).(m_finode_res_unlock)
 	if !res.ok {
 		panic("Attempt to unlock a non-locked Finode")
 	}
 }
+
+func (fi *finodeRequestChan) Truncate() error {
+	fi.in <- m_finode_req_truncate{}
+	res := (<-fi.out).(m_finode_res_truncate)
+	return res.err
+}
+
+// FIXME: All of these
+func (fi *finodeRequestChan) IsMountPoint() bool {
+	return fi.inode.mount
+}
+
+func (fi *finodeRequestChan) SetMountPoint(mounted bool) {
+	fi.inode.mount = mounted
+}
+
+func (fi *finodeRequestChan) Links() int {
+	return int(fi.inode.disk.Nlinks)
+}
+
+func (fi *finodeRequestChan) IncLinks() {
+	fi.inode.disk.Nlinks++
+}
+
+func (fi *finodeRequestChan) DecLinks() {
+	fi.inode.disk.Nlinks--
+}
+
+func (fi *finodeRequestChan) SetDirty(dirty bool) {
+	fi.inode.dirty = true
+}
+
+func (fi *finodeRequestChan) Size() int {
+	return int(fi.inode.disk.Size)
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// Private implementations
+//////////////////////////////////////////////////////////////////////////////
 
 func (fi *finode) read(b []byte, pos int) (int, error) {
 	// We want to read at most len(b) bytes from the given file. This data
@@ -164,11 +210,11 @@ func (fi *finode) read(b []byte, pos int) (int, error) {
 	// Rather than getting fancy, just slice b to contain only enough space
 	// for the data that is available
 	// TODO: Should this rely on the inode size?
-	if curpos+len(b) > int(fi.inode.Inode.Size) {
-		b = b[:int(fi.inode.Inode.Size)-curpos]
+	if curpos+len(b) > int(fi.inode.disk.Size) {
+		b = b[:int(fi.inode.disk.Size)-curpos]
 	}
 
-	if curpos >= int(fi.inode.Inode.Size) {
+	if curpos >= int(fi.inode.disk.Size) {
 		return 0, io.EOF
 	}
 
@@ -181,7 +227,7 @@ func (fi *finode) read(b []byte, pos int) (int, error) {
 
 	// TODO: Error check this
 	// read the first data block and copy the portion of data we need
-	bp := fi.cache.GetBlock(fi.inode.Devno, bnum, FULL_DATA_BLOCK, NORMAL)
+	bp := fi.cache.GetBlock(fi.inode.devnum, bnum, FULL_DATA_BLOCK, NORMAL)
 	bdata, bok := bp.Block.(FullDataBlock)
 	if !bok {
 		// TODO: Attempt to read from an invalid location, what should happen?
@@ -211,7 +257,7 @@ func (fi *finode) read(b []byte, pos int) (int, error) {
 	// will likely be a partial block, so handle that specially.
 	for numBytes < len(b) {
 		bnum = ReadMap(fi.inode, curpos, fi.cache)
-		bp := fi.cache.GetBlock(fi.inode.Devno, bnum, FULL_DATA_BLOCK, NORMAL)
+		bp := fi.cache.GetBlock(fi.inode.devnum, bnum, FULL_DATA_BLOCK, NORMAL)
 		if _, sok := bp.Block.(FullDataBlock); !sok {
 			log.Printf("block num: %d", bp.Blockno)
 			log.Panicf("When reading block %d for position %d, got IndirectBlock", bnum, curpos)
@@ -252,7 +298,7 @@ func (fi *finode) write(data []byte, pos int) (n int, err error) {
 	// in the original source. At some point it should be reviewed.
 	cum_io := 0
 	position := pos
-	fsize := int(fi.inode.Inode.Size)
+	fsize := int(fi.inode.disk.Size)
 
 	// Check in advance to see if file will grow too big
 	if position > fi.devinfo.Maxsize-len(data) {
@@ -263,7 +309,7 @@ func (fi *finode) write(data []byte, pos int) (n int, err error) {
 	// created. This is necessary because all unwritten blocks prior to the
 	// EOF must read as zeros.
 	if position > fsize {
-		utils.ClearZone(fi.inode, fsize, 0, fi.cache)
+		ClearZone(fi.inode, fsize, 0, fi.cache)
 	}
 
 	bsize := fi.devinfo.Blocksize
@@ -283,7 +329,7 @@ func (fi *finode) write(data []byte, pos int) (n int, err error) {
 		}
 
 		// Read or write 'chunk' bytes, fetch the first block
-		err = utils.WriteChunk(fi.inode, position, off, chunk, data, fi.cache)
+		err = WriteChunk(fi.inode, position, off, chunk, data, fi.cache)
 		if err != nil {
 			break // EOF reached
 		}
@@ -295,19 +341,19 @@ func (fi *finode) write(data []byte, pos int) (n int, err error) {
 		position += chunk   // position within the file
 	}
 
-	itype := fi.inode.Inode.Mode & I_TYPE
+	itype := fi.inode.disk.Mode & I_TYPE
 	if itype == I_REGULAR || itype == I_DIRECTORY {
 		if position > fsize {
-			fi.inode.Inode.Size = int32(position)
+			fi.inode.disk.Size = int32(position)
 		}
 	}
 
 	// TODO: Update times
 	if err == nil {
-		fi.inode.Dirty = true
+		fi.inode.dirty = true
 	}
 
 	return cum_io, err
 }
 
-var _ Finode = &requestChan{}
+var _ Finode = &finodeRequestChan{}

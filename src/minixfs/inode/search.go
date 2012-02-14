@@ -1,8 +1,7 @@
-package dinode
+package inode
 
 import (
 	. "minixfs/common"
-	"minixfs/utils"
 )
 
 type dirop int
@@ -22,15 +21,15 @@ func (d *dinode) search_dir(path string, inum *int, op dirop) error {
 	// step through the directory on block at a time
 	var bp *CacheBlock
 	var dp *Disk_dirent
-	old_slots := int(dirp.Inode.Size / DIR_ENTRY_SIZE)
+	old_slots := int(dirp.disk.Size / DIR_ENTRY_SIZE)
 	new_slots := 0
 	e_hit := false
 	match := false
 	extended := false
 
-	for pos := 0; pos < int(dirp.Inode.Size); pos += blocksize {
+	for pos := 0; pos < int(dirp.disk.Size); pos += blocksize {
 		b := ReadMap(dirp, pos, d.cache) // get block number
-		bp = d.cache.GetBlock(dirp.Devno, b, DIRECTORY_BLOCK, NORMAL)
+		bp = d.cache.GetBlock(dirp.devnum, b, DIRECTORY_BLOCK, NORMAL)
 		if bp == nil {
 			panic("get_block returned NO_BLOCK")
 		}
@@ -70,7 +69,7 @@ func (d *dinode) search_dir(path string, inum *int, op dirop) error {
 					// TODO: Save inode for recovery
 					dp.Inum = 0 // erase entry
 					bp.Dirty = true
-					dirp.Dirty = true
+					dirp.dirty = true
 				} else {
 					*inum = int(dp.Inum)
 				}
@@ -110,7 +109,7 @@ func (d *dinode) search_dir(path string, inum *int, op dirop) error {
 			return EFBIG
 		}
 		var err error
-		bp, err = utils.NewBlock(dirp, int(dirp.Inode.Size), DIRECTORY_BLOCK, d.cache)
+		bp, err = NewBlock(dirp, int(dirp.disk.Size), DIRECTORY_BLOCK, d.cache)
 		if err != nil {
 			return err
 		}
@@ -135,9 +134,9 @@ func (d *dinode) search_dir(path string, inum *int, op dirop) error {
 
 	d.cache.PutBlock(bp, DIRECTORY_BLOCK)
 	// TODO: update times
-	dirp.Dirty = true
+	dirp.dirty = true
 	if new_slots > old_slots {
-		dirp.Inode.Size = (int32(new_slots * DIR_ENTRY_SIZE))
+		dirp.disk.Size = (int32(new_slots * DIR_ENTRY_SIZE))
 		// Send the change to disk if the directory is extended
 		if extended {
 			// TODO: Write this inode out to the block cache

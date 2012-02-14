@@ -1,4 +1,4 @@
-package dinode
+package inode
 
 import (
 	. "minixfs/common"
@@ -47,7 +47,7 @@ type m_dinode_res_async struct {
 }
 
 type m_dinode_res_lock struct {
-	dinode Dinode
+	dinode *dinodeRequestChan
 }
 
 type m_dinode_res_unlock struct {
@@ -60,7 +60,7 @@ type m_dinode_res_lookup struct {
 	inum  int
 }
 type m_dinode_res_lookupget struct {
-	inode *CacheInode
+	inode CacheInode
 	err   error
 }
 

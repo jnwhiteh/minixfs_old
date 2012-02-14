@@ -1,4 +1,4 @@
-package dinode
+package inode
 
 import (
 	. "minixfs/common"
@@ -7,9 +7,10 @@ import (
 
 // The interface to the dinode is returned as a channel, with methods wrapping
 // the channel operations.
-type requestChan struct {
-	in  chan m_dinode_req
-	out chan m_dinode_res
+type dinodeRequestChan struct {
+	in    chan m_dinode_req
+	out   chan m_dinode_res
+	inode *cacheInode
 }
 
 // A Dinode is a process-oriented directory inode, shared amongst all open
@@ -17,7 +18,7 @@ type requestChan struct {
 // through a Dinode. This allows these operations to proceed concurrently for
 // two distinct directory inodes.
 type dinode struct {
-	inode   *CacheInode
+	inode   *cacheInode
 	devinfo DeviceInfo
 	cache   BlockCache
 
@@ -29,11 +30,11 @@ type dinode struct {
 	closed    chan bool
 }
 
-func New(inode *CacheInode, devinfo DeviceInfo, cache BlockCache) Dinode {
+func NewDinodeServer(inode *cacheInode) Dinode {
 	dinode := &dinode{
 		inode,
-		devinfo,
-		cache,
+		inode.devinfo,
+		inode.bcache,
 		make(chan m_dinode_req),
 		make(chan m_dinode_res),
 		nil,
@@ -43,37 +44,35 @@ func New(inode *CacheInode, devinfo DeviceInfo, cache BlockCache) Dinode {
 
 	go dinode.loop()
 
-	return &requestChan{dinode.in, dinode.out}
+	return &dinodeRequestChan{
+		dinode.in,
+		dinode.out,
+		inode,
+	}
 }
 
 func (d *dinode) loop() {
 	var in <-chan m_dinode_req = d.in
 	var out chan<- m_dinode_res = d.out
 
-	for req := range in {
+	for {
+		req, ok := <-in
+		if !ok {
+			return
+		}
+
 		switch req := req.(type) {
 		case m_dinode_req_lock:
-			// Someone is asking for exclusive access to the device, so move
-			// the channels around to arrange that, and return the new channel
-			// interface.
-			if d.locked != nil {
-				// We are already locked, return nil
-				out <- m_dinode_res_lock{nil}
-				continue
-			}
-			d.locked = d.in
-			dinodeLocked := &requestChan{
-				make(chan m_dinode_req),
+			newin := make(chan m_dinode_req)
+			in = newin
+			out <- m_dinode_res_lock{&dinodeRequestChan{
+				newin,
 				d.out,
-			}
-			in = dinodeLocked.in
-			out <- m_dinode_res_lock{dinodeLocked}
+				d.inode,
+			}}
 		case m_dinode_req_unlock:
-			if d.locked == nil {
-				// We are not locked, panic
-				out <- m_dinode_res_unlock{false}
-			}
-			in = d.locked
+			in = d.in
+			d.locked = nil
 			out <- m_dinode_res_unlock{true}
 		case m_dinode_req_lookup:
 			d.waitGroup.Add(1)
@@ -89,7 +88,7 @@ func (d *dinode) loop() {
 				if err != nil {
 					callback <- m_dinode_res_lookup{false, 0, 0}
 				} else {
-					callback <- m_dinode_res_lookup{true, d.inode.Devno, inum}
+					callback <- m_dinode_res_lookup{true, d.inode.devnum, inum}
 				}
 			}()
 		case m_dinode_req_lookupget:
@@ -106,7 +105,7 @@ func (d *dinode) loop() {
 				if err != nil {
 					callback <- m_dinode_res_lookupget{nil, err}
 				} else {
-					inode, err := req.icache.GetInode(d.inode.Devno, inum)
+					inode, err := req.icache.GetInode(d.inode.devnum, inum)
 					callback <- m_dinode_res_lookupget{inode, err}
 				}
 			}()
@@ -144,57 +143,63 @@ func (d *dinode) loop() {
 		case m_dinode_req_close:
 			d.waitGroup.Wait()
 			out <- m_dinode_res_err{nil}
-			break
+			close(d.in)
+			close(d.out)
 		}
 	}
-
-	close(d.in)
-	close(d.out)
 }
 
 //////////////////////////////////////////////////////////////////////////////
-// Public interface, provided as a requestChan
+// Public interface, provided as a dinodeRequestChan
 //////////////////////////////////////////////////////////////////////////////
-func (d *requestChan) Lookup(name string) (bool, int, int) {
+func (d *dinodeRequestChan) Devnum() int {
+	return d.inode.Devnum()
+}
+
+func (d *dinodeRequestChan) Inum() int {
+	return d.inode.Inum()
+}
+
+func (d *dinodeRequestChan) Lookup(name string) (bool, int, int) {
 	d.in <- m_dinode_req_lookup{name}
 	ares := (<-d.out).(m_dinode_res_async)
 	res := (<-ares.callback).(m_dinode_res_lookup)
 	return res.ok, res.devno, res.inum
 }
 
-func (d *requestChan) LookupGet(name string, icache InodeCache) (*CacheInode, error) {
+func (d *dinodeRequestChan) LookupGet(name string, icache InodeCache) (CacheInode, error) {
 	d.in <- m_dinode_req_lookupget{name, icache}
 	ares := (<-d.out).(m_dinode_res_async)
 	res := (<-ares.callback).(m_dinode_res_lookupget)
 	return res.inode, res.err
 }
 
-func (d *requestChan) Link(name string, inum int) error {
+func (d *dinodeRequestChan) Link(name string, inum int) error {
 	d.in <- m_dinode_req_link{name, inum}
 	res := (<-d.out).(m_dinode_res_err)
 	return res.err
 }
 
-func (d *requestChan) Unlink(name string) error {
+func (d *dinodeRequestChan) Unlink(name string) error {
 	d.in <- m_dinode_req_unlink{name}
 	res := (<-d.out).(m_dinode_res_err)
 	return res.err
 }
 
-func (d *requestChan) IsEmpty() bool {
+func (d *dinodeRequestChan) IsEmpty() bool {
 	d.in <- m_dinode_req_isempty{}
 	ares := (<-d.out).(m_dinode_res_async)
 	res := (<-ares.callback).(m_dinode_res_isempty)
 	return res.empty
 }
 
-func (d *requestChan) Lock() Dinode {
+func (d *dinodeRequestChan) Lock() Dinode {
 	d.in <- m_dinode_req_lock{}
 	res := (<-d.out).(m_dinode_res_lock)
 	return res.dinode
 }
 
-func (d *requestChan) Unlock() {
+func (d *dinodeRequestChan) Unlock() {
 	d.in <- m_dinode_req_unlock{}
 	res := (<-d.out).(m_dinode_res_unlock)
 	if !res.ok {
@@ -202,10 +207,39 @@ func (d *requestChan) Unlock() {
 	}
 }
 
-func (d *requestChan) Close() error {
+func (d *dinodeRequestChan) Close() error {
 	d.in <- m_dinode_req_close{}
 	res := (<-d.out).(m_dinode_res_err)
 	return res.err
 }
 
-var _ Dinode = &requestChan{}
+// FIXME: All of these
+func (d *dinodeRequestChan) IsMountPoint() bool {
+	return d.inode.mount
+}
+
+func (d *dinodeRequestChan) SetMountPoint(mounted bool) {
+	d.inode.mount = mounted
+}
+
+func (d *dinodeRequestChan) Links() int {
+	return int(d.inode.disk.Nlinks)
+}
+
+func (d *dinodeRequestChan) IncLinks() {
+	d.inode.disk.Nlinks++
+}
+
+func (d *dinodeRequestChan) DecLinks() {
+	d.inode.disk.Nlinks--
+}
+
+func (d *dinodeRequestChan) SetDirty(dirty bool) {
+	d.inode.dirty = true
+}
+
+func (d *dinodeRequestChan) Size() int {
+	return int(d.inode.disk.Size)
+}
+
+var _ Dinode = &dinodeRequestChan{}

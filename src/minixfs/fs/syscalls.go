@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"minixfs/bitmap"
 	. "minixfs/common"
-	"minixfs/utils"
-
 	"sync"
 )
 
@@ -112,7 +110,7 @@ func (fs *FileSystem) Mount(dev BlockDevice, path string) error {
 	fs.bcache.MountDevice(freeIndex, dev, devinfo)
 	fs.icache.MountDevice(freeIndex, bmap, devinfo)
 
-	// Get the inode of the file to be mounted on
+	// Get the inode of the file on which the new file system is being mounted
 	rip, err := fs.eatPath(fs.procs[ROOT_PROCESS], path)
 
 	if err != nil {
@@ -127,18 +125,18 @@ func (fs *FileSystem) Mount(dev BlockDevice, path string) error {
 	var r error = nil
 
 	// It may not be busy
-	if rip.Count > 1 {
+	if rip.IsBusy() {
 		r = EBUSY
 	}
 
 	// It may not be spacial
-	bits := rip.Inode.Mode & I_TYPE
+	bits := rip.Type() & I_TYPE
 	if bits == I_BLOCK_SPECIAL || bits == I_CHAR_SPECIAL {
 		r = ENOTDIR
 	}
 
-	// Get the root inode of the mounted file system
-	var root_ip *CacheInode
+	// Get the root inode of the file system we are mounting
+	var root_ip CacheInode
 	if r == nil {
 		root_ip, err = fs.icache.GetInode(freeIndex, ROOT_INODE)
 		if err != nil {
@@ -146,7 +144,7 @@ func (fs *FileSystem) Mount(dev BlockDevice, path string) error {
 		}
 	}
 
-	if root_ip != nil && root_ip.Inode.Mode == 0 {
+	if root_ip != nil && root_ip.Type() == 0 {
 		r = EINVAL
 	}
 
@@ -155,6 +153,13 @@ func (fs *FileSystem) Mount(dev BlockDevice, path string) error {
 		mdir := rip.IsDirectory()
 		rdir := root_ip.IsDirectory()
 		if !mdir && rdir {
+			r = EISDIR
+		}
+	}
+
+	// Both must be directories or files, we don't allow mounting other things
+	if r == nil {
+		if (!rip.IsDirectory() && !rip.IsRegular()) || (!root_ip.IsDirectory() && !root_ip.IsRegular()) {
 			r = EISDIR
 		}
 	}
@@ -177,7 +182,14 @@ func (fs *FileSystem) Mount(dev BlockDevice, path string) error {
 	}
 
 	// Nothing else can go wrong, so perform the mount
-	rip.Mount = true
+	if rip.IsDirectory() {
+		dinode := rip.Dinode()
+		dinode.SetMountPoint(true)
+	} else {
+		finode := rip.Finode()
+		finode.SetMountPoint(true)
+	}
+
 	fs.mountinfo[freeIndex] = mountInfo{rip, root_ip}
 
 	return nil
@@ -273,8 +285,8 @@ func (fs *FileSystem) Open(proc *Process, path string, oflags int, omode uint16)
 	bits := mode_map[oflags&O_ACCMODE]
 
 	var err error
-	var rip *CacheInode
-	var dirp *CacheInode
+	var rip CacheInode
+	var dirp CacheInode
 	var exist bool = false
 
 	// If O_CREATE is set, try to make the file
@@ -337,10 +349,12 @@ func (fs *FileSystem) Open(proc *Process, path string, oflags int, omode uint16)
 	err = nil
 	if exist {
 		// TODO: Check permissions
-		switch rip.GetType() {
+		switch rip.Type() {
 		case I_REGULAR:
 			if oflags&O_TRUNC > 0 {
-				utils.Truncate(rip, rip.Bitmap, fs.bcache)
+				finode := rip.Finode()
+				// TODO: DOn't ignore this
+				_ = finode.Truncate()
 				fs.wipeInode(rip)
 				// Send the inode from the inode cache to the block cache, so
 				// it gets written on the next cache flush
@@ -405,7 +419,7 @@ func (fs *FileSystem) Unlink(proc *Process, path string) error {
 	}
 
 	// Now test if the call is allowed (altered from Minix)
-	if rip.Inum == ROOT_INODE {
+	if rip.Inum() == ROOT_INODE {
 		err = EBUSY
 	}
 
@@ -431,31 +445,32 @@ func (fs *FileSystem) Mkdir(proc *Process, path string, mode uint16) error {
 	}
 
 	// Get the inode numbers for . and .. to enter into the directory
-	dotdot := dirp.Inum // parent's inode number
-	dot := rip.Inum     // inode number of the new dir itself
+	dotdot := dirp.Inum() // parent's inode number
+	dot := rip.Inum()     // inode number of the new dir itself
 
 	// Now make dir entries for . and .. unless the disk is completely full.
 	dinode := rip.Dinode()
-	rip.Inode.Mode = bits             // set mode
+	// This is already done by newNode
+	// rip.Inode.Mode = bits             // set mode
 	err1 := dinode.Link(".", dot)     // enter . in the new dir
 	err2 := dinode.Link("..", dotdot) // enter .. in the new dir
 
 	// If both . and .. were entered, increment the link counts
+	pdinode := dirp.Dinode()
 
 	if err1 == nil && err2 == nil {
 		// Normal case
-		rip.Inode.Nlinks++  // this accounts for .
-		dirp.Inode.Nlinks++ // this accounts for ..
-		dirp.Dirty = true
+		dinode.IncLinks()  // this accounts for .
+		pdinode.IncLinks() // this accounts for ..
+		pdinode.SetDirty(true)
 	} else {
 		// It did not work, so remove the new directory
-		pdinode := dirp.Dinode()
 		pdinode.Unlink(rest)
-		rip.Inode.Nlinks--
+		dinode.DecLinks()
 	}
 
 	// Either way nlinks has been updated
-	rip.Dirty = true
+	dinode.SetDirty(true)
 	fs.icache.PutInode(dirp)
 	fs.icache.PutInode(rip)
 
@@ -484,14 +499,14 @@ func (fs *FileSystem) Rmdir(proc *Process, path string) error {
 	if path == "." || path == ".." {
 		return EINVAL
 	}
-	if rip.Inum == ROOT_INODE { // can't remove root
+	if rip.Inum() == ROOT_INODE { // can't remove root
 		return EBUSY
 	}
 	// Make sure no one else is using this directory. This is a stronger
 	// condition than given in Minix initially, where it just cannot be the
 	// root or working directory of a process. Could be relaxed, this is just
 	// for sanity.
-	if rip.Count > 1 {
+	if rip.IsBusy() {
 		return EBUSY
 	}
 
