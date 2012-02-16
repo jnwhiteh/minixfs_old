@@ -255,6 +255,14 @@ func (c *inodeCache) loop() {
 
 			c.writeInode(rip)
 			out <- m_icache_res_empty{}
+		case m_icache_req_isinodebusy:
+			cino := req.rip
+			rip, ok := cino.(*cacheInode)
+			if !ok {
+				out <- m_icache_res_isinodebusy{false}
+			}
+
+			out <- m_icache_res_isinodebusy{rip.count > 1}
 		case m_icache_req_isbusy:
 			count := 0
 			for i := 0; i < len(c.inodes); i++ {
@@ -295,6 +303,12 @@ func (c *inodeCache) GetInode(devno, inum int) (CacheInode, error) {
 	ares := (<-c.out).(m_icache_res_async)
 	res := (<-ares.ch).(m_icache_res_getinode)
 	return res.rip, res.err
+}
+
+func (c *inodeCache) IsInodeBusy(rip CacheInode) bool {
+	c.in <- m_icache_req_isinodebusy{rip}
+	res := (<-c.out).(m_icache_res_isinodebusy)
+	return res.busy
 }
 
 func (c *inodeCache) IsDeviceBusy(devno int) bool {

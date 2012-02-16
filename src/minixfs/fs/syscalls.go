@@ -125,7 +125,7 @@ func (fs *FileSystem) Mount(dev BlockDevice, path string) error {
 	var r error = nil
 
 	// It may not be busy
-	if rip.IsBusy() {
+	if fs.icache.IsInodeBusy(rip) {
 		r = EBUSY
 	}
 
@@ -506,7 +506,7 @@ func (fs *FileSystem) Rmdir(proc *Process, path string) error {
 	// condition than given in Minix initially, where it just cannot be the
 	// root or working directory of a process. Could be relaxed, this is just
 	// for sanity.
-	if rip.IsBusy() {
+	if fs.icache.IsInodeBusy(rip) {
 		return EBUSY
 	}
 

@@ -55,6 +55,10 @@ type InodeCache interface {
 	// Flush the inode to the block cache, ensuring that it will be written
 	// the next time the block cache is flushed.
 	FlushInode(rip CacheInode)
+	// Returns whether or not the inode has more than one client. The result
+	// of this might change between checking this and taking any further
+	// action, so its use should be carefully considered.
+	IsInodeBusy(rip CacheInode) bool
 	// Returns whether or not the given device is busy. As non-busy device has
 	// exactly one client of the root inode.
 	IsDeviceBusy(devno int) bool
@@ -75,9 +79,6 @@ type Inode interface {
 type CacheInode interface {
 	Inode // Implement the standard Inode interface
 
-	// Return whether or not the cached inode is busy (i.e. has more than one
-	// client)
-	IsBusy() bool
 	// Return the type masked portion of the mode
 	Type() uint16
 
