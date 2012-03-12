@@ -152,8 +152,8 @@ func (c *LRUCache) loop() {
 					bp.m.Lock()
 					bp.waiting = append(bp.waiting, callback)
 					bp.m.Unlock()
-
-					out <- m_cache_res_async_block{callback}
+					bp.Devno = req.devno
+					bp.Blockno = req.bnum
 
 					// perform a load of this block asynchronously
 					go func() {
@@ -165,6 +165,8 @@ func (c *LRUCache) loop() {
 						bp.waiting = nil
 						bp.m.Unlock()
 					}()
+
+					out <- m_cache_res_async_block{callback}
 				}
 			}
 		case m_cache_req_put:

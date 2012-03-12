@@ -1,9 +1,11 @@
 package common
 
-// A random access device
 type BlockDevice interface {
+	// Read a block of data from the device at the given position
 	Read(buf interface{}, pos int64) error
+	// Write a block of data to the device at the given position
 	Write(buf interface{}, pos int64) error
+	// Close the device
 	Close() error
 }
 
@@ -29,10 +31,11 @@ type BlockCache interface {
 type Bitmap interface {
 	// Allocate a free inode, returning the number of the allocated inode
 	AllocInode() (int, error)
-	// Allocate a free zone, returning the number of the allocated zone. Zones
-	// are numbered starting at 0, which corresponds to Firstdatazone stored
-	// in the superblock. The search begins at the 'zstart' parameter, which
-	// is specified absolutely (and thus is adjusted by Firstdatazone).
+	// Allocate a free zone, returning the number of the allocated zone.
+	// The search for a free zone begins at the 'zstart' parameter, with 0
+	// being the first inode in the file system. This allows for the file
+	// system to attempt clustered allocation of related data (such as
+	// multiple data blocks for the same file).
 	AllocZone(zstart int) (int, error)
 	// Free an allocated inode
 	FreeInode(inum int)

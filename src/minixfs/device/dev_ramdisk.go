@@ -40,7 +40,7 @@ type ramdiskDevice struct {
 	data  bytestore
 	in    chan m_dev_req      // channel on which to receive requests
 	out   chan chan m_dev_res // channel via which callback channels are delivered
-	rwait *sync.WaitGroup     // a waitgroup used to
+	rwait *sync.WaitGroup     // a waitgroup used to track outstanding read requests
 }
 
 func NewRamdiskDevice(data []byte) (BlockDevice, error) {

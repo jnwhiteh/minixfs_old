@@ -10,9 +10,8 @@ type CacheBlock struct {
 	Devno   int   // the device number of this block
 	Dirty   bool  // whether or not the block is dirty (needs to be written)
 
-	// This is a single pointer to a higher-level buf structure, so the cache
-	// policy can correlate a given CacheBlock easily with the correct cache
-	// entry.
+	// A reference to a (possibly) higher-level structure, so the cache policy
+	// can correlate a given CacheBlock easily with the correct cache entry.
 	Buf interface{}
 }
 
